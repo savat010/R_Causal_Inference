@@ -1,0 +1,210 @@
+---
+title: "Does the Castle Doctrine Affect Robberies"
+author: "Pranav Chakradhar | Sumit Kumar | Yujun Wang | Lydia Savatsky"
+date: "5/7/2022"
+output: pdf_document
+fontsize: 12pt
+header-includes: \usepackage{setspace}\doublespacing
+---
+
+
+# Background
+The Castle Doctrine is a law which states that individuals have the right to use reasonable force, including deadly force, to protect themselves against an intruder in their home. Between 2000 and 2010, twenty-one states expanded the castle doctrine by permitting lethal force to be used outside the home in some places. This new expansion of the castle doctrine was called ‘Stand your Ground.’ This expansion meant that victims no longer had a duty to retreat in public places if they felt threatened. Instead, they could retaliate in lethal self-defense. 
+
+In the paper titled Does Strengthening Self Defense Law Deter Crime or Escalate Violence, authors Cheng Cheng and Mark Hoekstra used FBI data to analyze the impact of the expansion of the Castle Doctrine on Homicides in the United States using a difference-in-differences approach. In our analysis, we expanded Cheng and Hoekstra’s analysis to discover how the implementation of Stand Your Ground affected robberies in Florida. We chose to analyze the effect of the Stand Your Ground Law in Florida because it was the first state to pass this law. According to the FBI data, the law passed in 2006 in Florida.
+
+# Overview of Data
+We used the same data that Cheng and Hoekstra used from the fbi.gov website to analyze the affect of the Castle Doctrine on robberies. The data is panel data, consisting of crime rates between the years of 2000 and 2010 for fifty states.
+
+Our treatment group is Florida and our control group is the states which did not pass the Stand Your Ground Law until after 2010 (30 states). Our output variable is robbery per 100,000 state population. Each unit of observation is "robberies per 100,000 state population - year," meaning we have multiple observations for robberies per 100,00 state population over years of time.
+
+Some other important Features include:
+	- Unemployment rate
+	- Poverty
+	- % of black male aged 15-24 and 25-44
+	- % of white male aged 15-24 and 25-44	
+
+
+Below you can see a snipet of what the data looks like.
+```{r setup, warning=FALSE, message=FALSE}
+# Load libraries
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(glmnet)
+library(janitor)
+library(Synth)
+library(ggthemes)
+library(patchwork)
+library(causaldata)
+```
+
+```{r}
+castle <- read.csv("G:/My Drive/Semester 2/Causal Inference/R Code/Data/castle_data_with_state_names (1).csv")
+
+robbery <- castle %>% select('year', 'sid', 'state','robbery', 'post','unemployrt','poverty','blackm_15_24','whitem_15_24','blackm_25_44','whitem_25_44')
+
+head(robbery)
+```
+
+
+# Methods
+Because we are interested in knowing the impact of passing the law in one state versus states where it was not passed and the parallel trend assumption of difference-in-differences was violated while comparing individual states with Florida, we used a synthetic control approach rather than a difference-in-difference approach. We modeled Florida’s trend before 2006 as a weighted average of control states pre 2006 so that it provides a good counterfactual for comparison in the period after the law was passed since we can do an empirical analysis between the actual robbery rate in Florida post 2006 and the what the robbery rate would have looked like if the law were not passed.
+
+## Threats to Causality
+Before beginning our analysis, we must first establish causality by checking whether or not causal inference is valid for this data.
+
+We first checked if robberies were correlated with the expansion of the Castle Doctrine. The code below shows that there is a relative correlation between the two.
+```{r}
+cor(robbery$robbery, robbery$post)
+```
+
+
+Next we checked if our data is free from endogeneity. We do believe that our data is free from endogeneity, but we have a few minor threats to causal inference such as
+* Omitted Variable bias: confounding factors could also affect the number of robberies in Florida
+Such omitted variables include gun laws, homelessness, income, and more.
+* Measurement Error Bias: We believe that there is limited error in this data because the FBI is a reliable source, but we only have general information about robberies. We do not know further details such as who was involved in the crime.
+* Simultaneity Bias: We want to ensure that although the Stand Your Ground law affects robberies, an increase in robberies does not correlate to the Stand Your Ground Law being passed. We do not believe that simultaneity bias is a threat to our causal inference.
+
+Now that we have established that causal inference is valid for our data and addressed threats to causal inference, we can start our synthetic control analysis, beginning with our assumptions.
+
+## Assumptions
+In order for our analysis to be true, the following assumptions need to hold true:
+
+* Parallel Trend: In order to check the impact of Stand Your Ground on robbery in Florida, we assumed and tested the trend to be parallel between Florida and the states where it was not passed.
+* No Interference: We can also assume that if the law is passed in one state, it won’t have any impact on the crime rate in other states and hence SUTVA holds true.
+
+  
+We also performed a placebo test to check an Anticipation Effect. An anticipation effect is where people see the natural experiment coming. To perform this test, we moved the year the law was passed a few years earlier than it really was passed.
+  
+We first prepare the data for the synthetic control analysis, creating a treatment column which indicates if the state was Florida or not and an intervention column, which indicates if the year was after 2006.
+```{r}
+# list of control states
+robbery_control_st <- robbery %>%
+  group_by(sid) %>%
+  summarise(post = max(post)) %>%
+  filter(post == 0)
+
+# control states
+robbery_control <- robbery %>% filter(sid %in% robbery_control_st$sid)
+
+# State 10 (Florida) as treatment
+robbery_treat10 <- robbery %>% filter(sid == 10)
+
+# combine treatment and control datasets
+robbery10 <- rbind(robbery_treat10, robbery_control)
+robbery10 = robbery10 %>% mutate(treatment = ifelse(sid=='10', 1, 0),
+                                 intervention = ifelse(year>='2006', 1, 0))
+```
+
+Placebo Test:
+```{r}
+data_placebo = robbery10 %>%
+  mutate(after_placebo = ifelse(year > 2008, 1, 0))
+
+did_basic_placebo = lm(robbery ~ treatment + intervention + 
+                         treatment*intervention, data = data_placebo)
+summary(did_basic_placebo)
+```
+We see that there is no effect because our interaction term, treatment:intervention, has a high p-value, meaning we fail to reject the null hypothesis that there is no effect of the Expand Your Ground Doctrine on robberies in Flordia. Therefore, there is no placebo effect, and we can continue with our analysis.
+
+## Synthetic Control Analysis
+
+Below we have included our code for our syntehtic control analysis. We used the lasso method to assign fixed weights to our set of 30 control states where Stand Your Ground was not passed. In doing so, we will get a weighted average that closely resembles Florida’s robbery activity before the Stand Your Ground was law was implemented, thus following the parallel trends assumption. This process will allow us to synthesize what Florida would have looked like after 2006 if the Stand Your Ground law was not passed.
+
+
+
+
+Next we perform the synthetic control analysis using the lasso method. Below we can see the weights that were assigned to each state. The states that were given a positive weight include Hawaii, Nevada, New Jersey, and Rhode Island.
+```{r}
+### Synthetic Control using LASSO
+
+# First we pivot the data from long to wide, to use other districts' time series as predictors.
+robbery.wide <- robbery10 %>% pivot_wider(id_cols=c("year"),names_from=c("state"),values_from="robbery")
+robbery.wide.train <- subset(robbery.wide,year<2006)
+
+
+# We have many more predictors than time periods now, so we use LASSO for feature selection.
+robbery.wide.train.lasso <- remove_empty(robbery.wide.train, which=c("rows","cols"))
+robbery.wide.train_mm <- model.matrix(`Florida`~., robbery.wide.train.lasso)
+lasso <- cv.glmnet(robbery.wide.train_mm, robbery.wide.train$`Florida`, standardize=TRUE,alpha=1,nfolds=5)
+
+## Weights
+ests <- as.matrix(coef(lasso,lasso$lambda.1se))
+ests
+
+```
+```{r}
+# Here are the non-zero control panels that lasso selected.
+names(ests[ests!=0,])
+```
+
+
+
+We use these non-zero weights to create our synthetic control.
+```{r}
+# We can use the resulting control districts to create our 'synthetic control'. 
+fml.rhs <- paste(c(names(ests[ests!=0,]))[2:length(names(ests[ests!=0,]))],collapse="+")
+fml <- as.formula(paste("`Florida`~",fml.rhs))
+synth <- lm(data=robbery.wide.train,formula=fml)
+
+# Last, we can synthesize the resulting control series into the post treatment period. 
+robbery.wide$synth <- predict(synth,newdata = robbery.wide)
+```
+
+
+Finally, we graph our synthetic control and treatment group (Florida), to see the effect of the Castle Doctrine after the Stand Your Ground Law was passed in Florida.
+```{r}
+library(scales)
+# And, finally, we plot the comparison between synthetic and actual.
+ggplot(data=robbery.wide,aes(y=synth,x=year,linetype="dashed")) + geom_line() + 
+  geom_line(aes(y=`Florida`,x=year,linetype="solid")) +
+  geom_vline(xintercept=2006,color="red") + 
+  xlab(expression(bold(paste("Year")))) +  
+  ylab(expression(bold(paste("Robbery Cases (Per 100,000 State Population)")))) + 
+  scale_linetype_manual(name="Series",values=c("dashed","solid"),labels=c("Synth","Florida"))+
+  ggtitle("Effect of Stand Your Ground on Robberies in Florida") +
+  scale_x_continuous(breaks = seq(2000, 2010, 2)) +
+  theme_bw()
+```
+
+# Results & Conclusions
+There is a slight increase in robbery count between 2005 and 2007 and then a sharp decrease for treatment. This is possibly due to a Primacy effect which essentially accounts for the lag in the impact of passing a law.
+
+The synthetic control method gives us the value of the Average Treatment on the Treated, which means that we cannot generalize the effect of Stand Your Ground on other states. We can only understand how robberies changed in Florida after the law was passed.
+
+
+We can further estimate this Average Treatment on the Treated by calculating the difference-in-difference value.
+```{r}
+# synthetic pre and post treatment
+robbery.wide$synth
+```
+
+```{r}
+# robberies in Florida pre and post treatment
+robbery %>% filter(sid==10) %>% select('year', 'robbery')
+```
+```{r}
+# pre treatment difference between Florida and synthetic control
+pre_trt = ((203.9897 - 203.9897) + (205.3277 - 205.3277) + (199.6549 - 199.6549) + (189.6902 - 189.6903) + (176.5549 - 176.5549) + (173.3984 - 173.3984))/6
+
+# post-treatment difference between Florida and synthetic control
+post_trt = ((188.7629 - 180.4991) + (211.8021 - 172.6932) + (199.4740 - 168.6987) + (169.6317 -  154.7592))/4
+  
+# take difference of difference
+post_trt - pre_trt
+
+
+```
+
+We obtain a value of 23.25, meaning that ......
+
+
+# Limitations
+Our limitations in this analysis are mainly due to the data source. Since we are not able to design and conduct experiments, we can only use observation data in limited years with limited variables.
+
+* We have limited years: in our analysis, we saw a decreasing trend from 2005 to 2010. But it is possible that the robbery rates will go back to a high level after 2010. So if we had data after 2010, we would check if the trend continues to decrease to be sure that robberies do decrease after Stand Your Ground.
+* We have limited variables: we construct the parallel trend based on other 4 states for Florida as a good counterfactual. But we only use 6 variables in our analysis: unemployment rate, poverty, percentages of black and white males in different age groups. If we had more granular data, we would look into other variables to make more solid conclusions. Other variables that we would look into include location and time of crime, education, income, and homelessness.
+
+
+
